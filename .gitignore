@@ -1,0 +1,76 @@
+# -------------------------------
+# Node.js / React / Next.js / Vue / Expo
+# -------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+dist/
+build/
+.next/
+.nuxt/
+.expo/
+.expo-shared/
+coverage/
+.env
+.env.*.local
+# Vercel / Netlify
+.vercel/
+.netlify/
+# -------------------------------
+# Python / AI (LLMs, FastAPI, Torch, Hugging Face)
+# -------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.env
+.venv/
+venv/
+ENV/
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+# Model weights (too large for git, use HF or git-lfs)
+*.pt
+*.bin
+*.h5
+*.ckpt
+*.onnx
+*.model
+# Hugging Face cache
+huggingface/
+.cache/
+transformers_cache/
+torch_cache/
+datasets/
+# -------------------------------
+# Firebase
+# -------------------------------
+.firebase/
+firestore-debug.log
+firebase-debug.log
+.firebase-tools.json
+firebase-key.json  # :key: Keep service account private!
+# -------------------------------
+# IDEs / OS
+# -------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+# -------------------------------
+# Misc
+# -------------------------------
+logs/
+*.log
+*.tmp
+temp/
+tmp/
