@@ -6,6 +6,7 @@ import os
 import subprocess
 import librosa
 import numpy as np
+import html
 from fastapi import APIRouter, File, UploadFile
 from transformers import pipeline
 from supabase import create_client, Client
@@ -25,7 +26,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -----------------------------
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")  # SMS (if you enable paid later)
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")  # sandbox
 twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # -----------------------------
@@ -33,8 +35,6 @@ twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 # -----------------------------
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
-
-# Use your verified SendGrid sender email
 SENDGRID_SENDER = os.getenv("SENDGRID_SENDER_EMAIL", "pbelegur@asu.edu")
 
 router = APIRouter()
@@ -101,7 +101,7 @@ def chunk_text(text, max_chars=300):
     return chunks
 
 # -----------------------------
-# Emergency Contacts from DB
+# DB helpers
 # -----------------------------
 def get_emergency_contacts(student_id: str):
     try:
@@ -110,37 +110,88 @@ def get_emergency_contacts(student_id: str):
     except Exception:
         return []
 
+def get_student_details(student_id: str):
+    try:
+        resp = supabase.table("students").select("name, email").eq("id", student_id).single().execute()
+        return resp.data or {}
+    except Exception:
+        return {}
+
 # -----------------------------
-# Send SOS Alerts (SMS + Email)
+# Send SOS Alerts (WhatsApp + Email)
 # -----------------------------
-def send_sos_alerts(contacts, transcript, risk_score):
+def send_sos_alerts(contacts, transcript, risk_score, latitude=None, longitude=None, student=None):
     alerts = []
+    student_name = student.get("name", "Unknown") if student else "Unknown"
+    student_email = student.get("email", "Unknown") if student else "Unknown"
+
+    # Build location string
+    coords_str, maps_url = "unknown", None
+    if latitude is not None and longitude is not None:
+        coords_str = f"{latitude:.6f}, {longitude:.6f}"
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+
+    # WhatsApp / Email message text
+    plain_msg = (
+        "🚨 EMERGENCY — Please help! 🚨\n\n"
+        "I am in danger and need immediate assistance.\n\n"
+    )
+    if maps_url:
+        plain_msg += f"Location (Google Maps): {maps_url}\n"
+    plain_msg += f"Coordinates: {coords_str}\n\n"
+    plain_msg += f"Student: {student_name} ({student_email})\n\n"
+    plain_msg += f"Transcript: \"{transcript.strip()}\"\n"
+    plain_msg += f"Risk Score: {risk_score}\n\n"
+    plain_msg += "This is an automated alert from SafetyBuddy."
+
+    # HTML version
+    html_msg = (
+        "<h2>🚨 EMERGENCY — Please help!</h2>"
+        "<p><strong>I am in danger and need immediate assistance.</strong></p>"
+    )
+    if maps_url:
+        html_msg += f'<p>Location: <a href="{html.escape(maps_url)}">{html.escape(coords_str)}</a></p>'
+    else:
+        html_msg += f"<p>Coordinates: {html.escape(coords_str)}</p>"
+    html_msg += f"<p>Student: <strong>{html.escape(student_name)}</strong> ({html.escape(student_email)})</p>"
+    html_msg += f"<p>Transcript: <em>{html.escape(transcript.strip())}</em></p>"
+    html_msg += f"<p>Risk Score: <strong>{risk_score}</strong></p>"
+    html_msg += "<p>This is an automated alert from <strong>SafetyBuddy</strong>.</p>"
+
     for c in contacts:
-        msg = f"SOS ALERT 🚨 | Transcript: {transcript} | Risk Score: {risk_score} | Contact: {c['contact_name']}"
+        contact_name = c.get("contact_name", "contact")
+        phone = c.get("contact_phone")
+        email = c.get("contact_email")
 
-        # --- SMS via Twilio ---
-        try:
-            twilio_client.messages.create(
-                body=msg,
-                from_=TWILIO_PHONE_NUMBER,
-                to=c["contact_phone"]
-            )
-            alerts.append(f"✅ SMS sent to {c['contact_name']} ({c['contact_phone']})")
-        except Exception as e:
-            alerts.append(f"❌ Failed SMS to {c['contact_name']}: {str(e)}")
+        # 1) WhatsApp
+        if phone:
+            try:
+                to_wh = f"whatsapp:{phone}"
+                twilio_client.messages.create(
+                    body=plain_msg,
+                    from_=TWILIO_WHATSAPP_NUMBER,
+                    to=to_wh
+                )
+                alerts.append(f"✅ WhatsApp sent to {contact_name} ({phone})")
+            except Exception as e:
+                alerts.append(f"❌ Failed WhatsApp to {contact_name} ({phone}): {str(e)}")
 
-        # --- Email via SendGrid ---
-        try:
-            email = Mail(
-                from_email=SENDGRID_SENDER,
-                to_emails=c["contact_email"],
-                subject="🚨 SafetyBuddy SOS Alert",
-                plain_text_content=msg
-            )
-            sg.send(email)
-            alerts.append(f"✅ Email sent to {c['contact_name']} ({c['contact_email']})")
-        except Exception as e:
-            alerts.append(f"❌ Failed Email to {c['contact_name']}: {str(e)}")
+        # 2) Email
+        if email:
+            try:
+                message = Mail(
+                    from_email=SENDGRID_SENDER,
+                    to_emails=email,
+                    subject="🚨 SafetyBuddy: Emergency Alert",
+                    plain_text_content=plain_msg,
+                )
+                message.add_content(sendgrid.helpers.mail.Content("text/html", html_msg))
+                resp = sg.send(message)
+                alerts.append(f"✅ Email sent to {contact_name} ({email}) — status {getattr(resp, 'status_code', '')}")
+            except Exception as e:
+                alerts.append(f"❌ Failed Email to {contact_name} ({email}): {str(e)}")
+        else:
+            alerts.append(f"⚠️ No email for {contact_name}, skipping email")
 
     return alerts
 
@@ -205,8 +256,8 @@ async def process_audio(file: UploadFile = File(...)):
         risk_level = "HIGH" if risk_score >= 70 else "MEDIUM" if risk_score >= 40 else "LOW"
 
         # Step 7: Save Event
-        student_id = "00000000-0000-0000-0000-000000000001"  # TODO: frontend
-        lat, lon = 33.4255, -111.9400  # TODO: from GPS
+        student_id = "00000000-0000-0000-0000-000000000001"
+        lat, lon = 33.4255, -111.9400
         priority = 3 if risk_level == "HIGH" else 2 if risk_level == "MEDIUM" else 1
 
         db_event = supabase.table("sos_events").insert({
@@ -223,11 +274,12 @@ async def process_audio(file: UploadFile = File(...)):
         }).execute()
 
         # Step 8: Trigger Alerts
-        alerts = []
-        if risk_level in ["HIGH", "MEDIUM"]:
-            contacts = get_emergency_contacts(student_id)
-            if contacts:
-                alerts = send_sos_alerts(contacts, transcript, risk_score)
+        contacts = get_emergency_contacts(student_id)
+        student = get_student_details(student_id)
+        alerts = send_sos_alerts(
+            contacts, transcript, risk_score,
+            latitude=lat, longitude=lon, student=student
+        ) if contacts else []
 
         # Cleanup
         os.remove(input_path)
